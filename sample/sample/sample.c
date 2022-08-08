@@ -16,6 +16,25 @@ void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 	return;
 }
 
+NTSTATUS MyCreateDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
+{
+	pDevObj = pDevObj;
+	pIrp = pIrp;
+
+	pIrp->IoStatus.Status = STATUS_SUCCESS;
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS MyCloseDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
+{
+	pDevObj = pDevObj;
+
+	pIrp->IoStatus.Status = STATUS_SUCCESS;
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return STATUS_SUCCESS;
+}
+
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
 {
 	NTSTATUS ntStatus;
@@ -26,6 +45,9 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
 	RegPath = RegPath;
 
 	pDrvObj->DriverUnload = SampleDriverUnload;
+
+	pDrvObj->MajorFunction[IRP_MJ_CREATE] = MyCreateDispatch;
+	pDrvObj->MajorFunction[IRP_MJ_CLOSE] = MyCloseDispatch;
 
 	// Create DeviceObject
 	RtlInitUnicodeString(&DeviceName, L"\\Device\\SAMPLE");
