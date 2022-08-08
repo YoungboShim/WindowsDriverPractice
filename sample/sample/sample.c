@@ -1,37 +1,39 @@
 #include <ntddk.h>
 
-WCHAR g_TempString[512] = { 0, };
-void NotifyRoutine(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
+void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 {
-	Process = Process; ProcessId = ProcessId;
-	if (CreateInfo == NULL)
-		goto exit;
+	UNICODE_STRING SymbolicLinkName;
 
-	memset(g_TempString, 0, 512 * sizeof(WCHAR));
-	memcpy(g_TempString, CreateInfo->ImageFileName->Buffer, CreateInfo->ImageFileName->Length);
-	_wcsupr(g_TempString);
-	if (wcswcs(g_TempString, L"NOTEPAD.EXE"))
-	{
-		CreateInfo->CreationStatus = STATUS_UNSUCCESSFUL;
-	}
+	pDrvObj = pDrvObj;
 
-exit:
+	// Delete symoblic name
+	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
+	IoDeleteSymbolicLink(&SymbolicLinkName);
+
+	// Delete DeviceObject
+	IoDeleteDevice(pDrvObj->DeviceObject);
+
 	return;
 }
 
-void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
+NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
 {
-	pDrvObj = pDrvObj;
-	PsSetCreateProcessNotifyRoutineEx(NotifyRoutine, TRUE);
-}
+	NTSTATUS ntStatus;
+	UNICODE_STRING DeviceName;
+	UNICODE_STRING SymbolicLinkName;
+	PDEVICE_OBJECT DeviceObject = NULL;
 
-NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING pRegistryPath)
-{
-	pRegistryPath = pRegistryPath;
+	RegPath = RegPath;
 
 	pDrvObj->DriverUnload = SampleDriverUnload;
 
-	PsSetCreateProcessNotifyRoutineEx(NotifyRoutine, FALSE);
+	// Create DeviceObject
+	RtlInitUnicodeString(&DeviceName, L"\\Device\\SAMPLE");
+	ntStatus = IoCreateDevice(pDrvObj, 0, &DeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &DeviceObject);
+
+	// Create Symbolic name
+	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
+	ntStatus = IoCreateSymbolicLink(&SymbolicLinkName, &DeviceName);
 
 	return STATUS_SUCCESS;
 }
