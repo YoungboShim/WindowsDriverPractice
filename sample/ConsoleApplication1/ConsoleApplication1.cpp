@@ -3,12 +3,23 @@
 
 #include <iostream>
 #include <Windows.h>
+#include <stdio.h>
 
 int main()
 {
     HANDLE handle;
+    BOOL bRet;
+    DWORD dwRet;
+    UCHAR buffer[100] = { 0, };
 
     handle = CreateFile(L"\\??\\MYSAMPLE", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+    bRet = ReadFile(handle, buffer, 5, &dwRet, NULL);
+    printf("Read: dwRet =%d\n", dwRet);
+    bRet = WriteFile(handle, "HELLO", 5, &dwRet, NULL);
+    printf("Write: dwRet =%d\n", dwRet);
+    bRet = ReadFile(handle, buffer, 100, &dwRet, NULL);
+    printf("Read: dwRet =%d\n", dwRet);
 
     CloseHandle(handle);
 }
