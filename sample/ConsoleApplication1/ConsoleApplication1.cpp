@@ -15,11 +15,16 @@ int main()
     handle = CreateFile(L"\\??\\MYSAMPLE", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
 
     bRet = ReadFile(handle, buffer, 5, &dwRet, NULL);
-    printf("Read: dwRet =%d\n", dwRet);
+    if (bRet) printf("Read: dwRet =%d\n", dwRet);
+    else printf("Read: FAIL");
+
     bRet = WriteFile(handle, "HELLO", 5, &dwRet, NULL);
-    printf("Write: dwRet =%d\n", dwRet);
+    if (bRet) printf("Write: dwRet =%d\n", dwRet);
+    else printf("Read: FAIL");
+
     bRet = ReadFile(handle, buffer, 100, &dwRet, NULL);
-    printf("Read: dwRet =%d\n", dwRet);
+    if (bRet) printf("Read: dwRet =%d\n", dwRet);
+    else printf("Read: FAIL");
 
     CloseHandle(handle);
 }

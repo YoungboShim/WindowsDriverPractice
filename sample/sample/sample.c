@@ -46,15 +46,15 @@ NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	PIO_STACK_LOCATION pStack;
 	DEVICE_EXTENSION* pDE;
 	int Length;
-	unsigned char* pUserBuffer;
+	unsigned char* pSystemBuffer;
 
 	pStack = IoGetCurrentIrpStackLocation(pIrp);
 	pDE = pDevObj->DeviceExtension;
 	Length = pStack->Parameters.Read.Length;
 	if (Length > pDE->DataSize) Length = pDE->DataSize;
-	pUserBuffer = pIrp->UserBuffer;
+	pSystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
 
-	memcpy(pUserBuffer, pDE->Buffer, Length);
+	memcpy(pSystemBuffer, pDE->Buffer, Length);
 
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	pIrp->IoStatus.Information = Length;
@@ -67,15 +67,15 @@ NTSTATUS MyWriteDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	PIO_STACK_LOCATION pStack;
 	DEVICE_EXTENSION* pDE;
 	int Length;
-	unsigned char* pUserBuffer;
+	unsigned char* pSystemBuffer;
 
 	pStack = IoGetCurrentIrpStackLocation(pIrp);
 	pDE = pDevObj->DeviceExtension;
 	Length = pStack->Parameters.Write.Length;
 	if (Length > 4) Length = 4;
-	pUserBuffer = pIrp->UserBuffer;
+	pSystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
 
-	memcpy(pDE->Buffer, pUserBuffer, Length);
+	memcpy(pDE->Buffer, pSystemBuffer, Length);
 	pDE->DataSize = Length;
 
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
@@ -106,6 +106,7 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
 	ntStatus = IoCreateDevice(pDrvObj, sizeof(DEVICE_EXTENSION), &DeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &DeviceObject);
 	pDE = (DEVICE_EXTENSION * )DeviceObject->DeviceExtension;
 	pDE->DataSize = 0; // init
+	DeviceObject->Flags |= DO_BUFFERED_IO;
 
 	// Create Symbolic name
 	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
