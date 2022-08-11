@@ -1,4 +1,5 @@
 #include <ntddk.h>
+#include <math.h>
 
 #define PENDING_SUPPORTED
 
@@ -83,7 +84,7 @@ NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	IoMarkIrpPending(pIrp);
 	{
 		LARGE_INTEGER pendingTime;
-		pendingTime.QuadPart = -1 * 5 * (10 ^ 7);	// -1: relative time, 5: 5sec, 10^7: base time is 10^-7sec
+		pendingTime.QuadPart = -1 * 5 * 10000000;	// -1: relative time, 5: 5sec, 10^7: base time is 10^-7sec
 		KeSetTimer(&pDE->Timer, pendingTime, &pDE->Dpc);
 	}
 	return STATUS_PENDING;

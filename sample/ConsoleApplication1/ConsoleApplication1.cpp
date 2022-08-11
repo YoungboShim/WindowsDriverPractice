@@ -23,7 +23,7 @@ int main()
     printf("returned from ReadFile..\n");
 
     Tick = GetTickCount() - Tick;
-    printf("delay time = &d msec, ReadFile\n", Tick);
+    printf("delay time = %d msec, ReadFile\n", Tick);
 
     CloseHandle(handle);
 
