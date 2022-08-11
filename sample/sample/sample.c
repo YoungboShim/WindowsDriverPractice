@@ -1,9 +1,16 @@
 #include <ntddk.h>
 
+#define PENDING_SUPPORTED
+
 typedef struct
 {
 	unsigned char Buffer[4];
 	int DataSize;
+#ifdef PENDING_SUPPORTED
+	KTIMER Timer;
+	KDPC Dpc;
+	PIRP pPendingIrp;
+#endif
 } DEVICE_EXTENSION;
 
 void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
@@ -21,6 +28,18 @@ void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 
 	return;
 }
+
+#ifdef PENDING_SUPPORTED
+void MyTimerDpcRoutine(PKDPC Dpc, PVOID DeferredContext, PVOID SystemArg1, PVOID SystemArg2)
+{
+	DEVICE_EXTENSION* pDE = (DEVICE_EXTENSION*)DeferredContext;
+	Dpc = Dpc;
+	SystemArg1 = SystemArg1;
+	SystemArg2 = SystemArg2;
+
+	IoCompleteRequest(pDE->pPendingIrp, IO_NO_INCREMENT);
+}
+#endif
 
 NTSTATUS MyCreateDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
@@ -58,33 +77,23 @@ NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	pIrp->IoStatus.Information = Length;
+
+#ifdef PENDING_SUPPORTED
+	pDE->pPendingIrp = pIrp;
+	IoMarkIrpPending(pIrp);
+	{
+		LARGE_INTEGER pendingTime;
+		pendingTime.QuadPart = -1 * 5 * (10 ^ 7);	// -1: relative time, 5: 5sec, 10^7: base time is 10^-7sec
+		KeSetTimer(&pDE->Timer, pendingTime, &pDE->Dpc);
+	}
+	return STATUS_PENDING;
+#else
 	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
 	return STATUS_SUCCESS;
+#endif // PENDING_SUPPORTED
 }
 
-NTSTATUS MyWriteDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
-{
-	PIO_STACK_LOCATION pStack;
-	DEVICE_EXTENSION* pDE;
-	int Length;
-	unsigned char* pSystemBuffer;
-
-	pStack = IoGetCurrentIrpStackLocation(pIrp);
-	pDE = pDevObj->DeviceExtension;
-	Length = pStack->Parameters.Write.Length;
-	if (Length > 4) Length = 4;
-	pSystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
-
-	memcpy(pDE->Buffer, pSystemBuffer, Length);
-	pDE->DataSize = Length;
-
-	pIrp->IoStatus.Status = STATUS_SUCCESS;
-	pIrp->IoStatus.Information = Length;
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
-	return STATUS_SUCCESS;
-}
-
-NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
+NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING pRegPath)
 {
 	NTSTATUS ntStatus;
 	UNICODE_STRING DeviceName;
@@ -92,21 +101,28 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING RegPath)
 	PDEVICE_OBJECT DeviceObject = NULL;
 	DEVICE_EXTENSION* pDE;
 
-	RegPath = RegPath;
+	pRegPath = pRegPath;
 
 	pDrvObj->DriverUnload = SampleDriverUnload;
 
 	pDrvObj->MajorFunction[IRP_MJ_CREATE] = MyCreateDispatch;
 	pDrvObj->MajorFunction[IRP_MJ_CLOSE] = MyCloseDispatch;
 	pDrvObj->MajorFunction[IRP_MJ_READ] = MyReadDispatch;
-	pDrvObj->MajorFunction[IRP_MJ_WRITE] = MyWriteDispatch;
 
 	// Create DeviceObject
 	RtlInitUnicodeString(&DeviceName, L"\\Device\\SAMPLE");
 	ntStatus = IoCreateDevice(pDrvObj, sizeof(DEVICE_EXTENSION), &DeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &DeviceObject);
+	DeviceObject->Flags |= DO_BUFFERED_IO;	// Use System Buffer 
+
 	pDE = (DEVICE_EXTENSION * )DeviceObject->DeviceExtension;
-	pDE->DataSize = 0; // init
-	DeviceObject->Flags |= DO_BUFFERED_IO;
+
+#ifdef PENDING_SUPPORTED
+	KeInitializeTimer(&pDE->Timer);
+	KeInitializeDpc(&pDE->Dpc, MyTimerDpcRoutine, pDE);
+#endif
+
+	memcpy(pDE->Buffer, "HELLO", 5);
+	pDE->DataSize = 5;
 
 	// Create Symbolic name
 	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
