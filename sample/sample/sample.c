@@ -1,22 +1,14 @@
 #include <ntddk.h>
-#include <math.h>
-
-#define PENDING_SUPPORTED
-
-#ifdef PENDING_SUPPORTED
-#define THREAD_TERMINATION_CANCELLING
-#endif
 
 typedef struct
 {
-	unsigned char Buffer[4];
-	int DataSize;
-#ifdef PENDING_SUPPORTED
-	KTIMER Timer;
 	KDPC Dpc;
-	PIRP pPendingIrp;
-#endif
-} DEVICE_EXTENSION;
+	KTIMER Timer;
+
+	KSPIN_LOCK ListSpinLock;
+	LIST_ENTRY ListHead;
+	PIRP pCurrentIrp;
+}DEVICE_EXTENSION;
 
 void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 {
@@ -24,151 +16,122 @@ void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 
 	pDrvObj = pDrvObj;
 
-	// Delete symoblic name
+	// Remove symbolic link
 	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
 	IoDeleteSymbolicLink(&SymbolicLinkName);
-
-	// Delete DeviceObject
-	IoDeleteDevice(pDrvObj->DeviceObject);
-
-	return;
-}
-
-#ifdef PENDING_SUPPORTED
-void MyTimerDpcRoutine(PKDPC Dpc, PVOID DeferredContext, PVOID SystemArg1, PVOID SystemArg2)
-{
-	DEVICE_EXTENSION* pDE = (DEVICE_EXTENSION*)DeferredContext;
-	KIRQL OldIrql;
-	Dpc = Dpc;
-	SystemArg1 = SystemArg1;
-	SystemArg2 = SystemArg2;
-#ifdef THREAD_TERMINATION_CANCELLING
-	IoAcquireCancelSpinLock(&OldIrql);
-#endif
 	
-	if (pDE->pPendingIrp)
-	{
-#ifdef THREAD_TERMINATION_CANCELLING
-		IoSetCancelRoutine(pDE->pPendingIrp, NULL);
-		IoReleaseCancelSpinLock(OldIrql);
-#endif
-		IoCompleteRequest(pDE->pPendingIrp, IO_NO_INCREMENT);
-	}
-	else
-	{
-#ifdef THREAD_TERMINATION_CANCELLING
-		IoReleaseCancelSpinLock(OldIrql);
-#endif
-	}
-	return;
+	// Remove device object
+	IoDeleteDevice(pDrvObj->DeviceObject);
 }
-
-#ifdef THREAD_TERMINATION_CANCELLING
-void MyCancelRoutine(PDEVICE_OBJECT pDevObj, PIRP pIrp)
-{
-	DEVICE_EXTENSION* pDE;
-	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
-
-	KeCancelTimer(&pDE->Timer);
-	pDE->pPendingIrp = NULL;
-
-	IoReleaseCancelSpinLock(pIrp->CancelIrql);
-
-	pIrp->IoStatus.Status = STATUS_CANCELLED;
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
-}
-#endif
-
-#endif
 
 NTSTATUS MyCreateDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
 	pDevObj = pDevObj;
 	pIrp = pIrp;
-
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	IoCompleteRequest(pIrp, 0); // 0 -> IO_NO_INCREMENT
 	return STATUS_SUCCESS;
 }
 
 NTSTATUS MyCloseDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
 	pDevObj = pDevObj;
-
+	pIrp = pIrp;
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	IoCompleteRequest(pIrp, 0); // 0 -> IO_NO_INCREMENT
 	return STATUS_SUCCESS;
+}
+
+void MyStartIo(DEVICE_EXTENSION* pDE)
+{
+	LARGE_INTEGER Result;
+	Result.QuadPart = -1 * 5 * 10000000; // 5 sec
+	KeSetTimer(&pDE->Timer, Result, &pDE->Dpc);
+}
+
+VOID MyTimerDpcRoutine(struct _KDPC* Dpc, PVOID  DeferredContext, PVOID SystemArgument1, PVOID SystemArgument2)
+{
+	DEVICE_EXTENSION* pDE = DeferredContext;
+	PLIST_ENTRY pListEntry = NULL;
+	Dpc = Dpc;
+	SystemArgument1 = SystemArgument1;
+	SystemArgument2 = SystemArgument2;
+
+	if (pDE->pCurrentIrp)
+	{
+		IoCompleteRequest(pDE->pCurrentIrp, IO_NO_INCREMENT);
+		pDE->pCurrentIrp = NULL;
+	}
+
+	if (!IsListEmpty(&pDE->ListHead))
+	{
+		pListEntry = ExInterlockedRemoveHeadList(&pDE->ListHead, &pDE->ListSpinLock);
+
+		pDE->pCurrentIrp = (PIRP)CONTAINING_RECORD(pListEntry, IRP, Tail.Overlay.DeviceQueueEntry.DeviceListEntry);
+
+		MyStartIo(pDE);
+	}
 }
 
 NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
-	PIO_STACK_LOCATION pStack;
 	DEVICE_EXTENSION* pDE;
-	int Length;
-	unsigned char* pSystemBuffer;
+	KIRQL OldIrql;
 
-	pStack = IoGetCurrentIrpStackLocation(pIrp);
-	pDE = pDevObj->DeviceExtension;
-	Length = pStack->Parameters.Read.Length;
-	if (Length > pDE->DataSize) Length = pDE->DataSize;
-	pSystemBuffer = pIrp->AssociatedIrp.SystemBuffer;
-
-	memcpy(pSystemBuffer, pDE->Buffer, Length);
+	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
 
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
-	pIrp->IoStatus.Information = Length;
+	pIrp->IoStatus.Information = 0;
 
-#ifdef PENDING_SUPPORTED
-
-#ifdef THREAD_TERMINATION_CANCELLING
-	IoSetCancelRoutine(pIrp, MyCancelRoutine);
-#endif
-	pDE->pPendingIrp = pIrp;
 	IoMarkIrpPending(pIrp);
+
+	if (pDE->pCurrentIrp)
 	{
-		LARGE_INTEGER pendingTime;
-		pendingTime.QuadPart = -1 * 5 * 10000000;	// -1: relative time, 5: 5sec, 10^7: base time is 10^-7sec
-		KeSetTimer(&pDE->Timer, pendingTime, &pDE->Dpc);
+		ExInterlockedInsertTailList(&pDE->ListHead, &pIrp->Tail.Overlay.DeviceQueueEntry.DeviceListEntry, &pDE->ListSpinLock);
 	}
+	else
+	{
+		KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+
+		pDE->pCurrentIrp = pIrp;
+		MyStartIo(pDE);
+
+		KeLowerIrql(OldIrql);
+	}
+
 	return STATUS_PENDING;
-#else
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
-	return STATUS_SUCCESS;
-#endif // PENDING_SUPPORTED
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING pRegPath)
 {
+	PDEVICE_OBJECT DeviceObject = NULL;
 	NTSTATUS ntStatus;
 	UNICODE_STRING DeviceName;
 	UNICODE_STRING SymbolicLinkName;
-	PDEVICE_OBJECT DeviceObject = NULL;
 	DEVICE_EXTENSION* pDE;
 
 	pRegPath = pRegPath;
-
-	pDrvObj->DriverUnload = SampleDriverUnload;
 
 	pDrvObj->MajorFunction[IRP_MJ_CREATE] = MyCreateDispatch;
 	pDrvObj->MajorFunction[IRP_MJ_CLOSE] = MyCloseDispatch;
 	pDrvObj->MajorFunction[IRP_MJ_READ] = MyReadDispatch;
 
+	pDrvObj->DriverUnload = SampleDriverUnload;
+
 	// Create DeviceObject
-	RtlInitUnicodeString(&DeviceName, L"\\Device\\SAMPLE");
+	RtlInitUnicodeString(&DeviceName, L"\\Device\\SAMPLE"); // Create symbolic name
 	ntStatus = IoCreateDevice(pDrvObj, sizeof(DEVICE_EXTENSION), &DeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &DeviceObject);
-	DeviceObject->Flags |= DO_BUFFERED_IO;	// Use System Buffer 
+	DeviceObject->Flags |= DO_BUFFERED_IO; // Use system buffer
 
-	pDE = (DEVICE_EXTENSION * )DeviceObject->DeviceExtension;
+	pDE = (DEVICE_EXTENSION*)DeviceObject->DeviceExtension;
 
-#ifdef PENDING_SUPPORTED
 	KeInitializeTimer(&pDE->Timer);
 	KeInitializeDpc(&pDE->Dpc, MyTimerDpcRoutine, pDE);
-#endif
 
-	memcpy(pDE->Buffer, "HELLO", 5);
-	pDE->DataSize = 5;
+	KeInitializeSpinLock(&pDE->ListSpinLock);
 
-	// Create Symbolic name
+	InitializeListHead(&pDE->ListHead);
+
 	RtlInitUnicodeString(&SymbolicLinkName, L"\\DosDevices\\MYSAMPLE");
 	ntStatus = IoCreateSymbolicLink(&SymbolicLinkName, &DeviceName);
 
