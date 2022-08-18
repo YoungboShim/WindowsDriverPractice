@@ -3,6 +3,10 @@
 
 #define PENDING_SUPPORTED
 
+#ifdef PENDING_SUPPORTED
+#define THREAD_TERMINATION_CANCELLING
+#endif
+
 typedef struct
 {
 	unsigned char Buffer[4];
@@ -34,12 +38,47 @@ void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
 void MyTimerDpcRoutine(PKDPC Dpc, PVOID DeferredContext, PVOID SystemArg1, PVOID SystemArg2)
 {
 	DEVICE_EXTENSION* pDE = (DEVICE_EXTENSION*)DeferredContext;
+	KIRQL OldIrql;
 	Dpc = Dpc;
 	SystemArg1 = SystemArg1;
 	SystemArg2 = SystemArg2;
-
-	IoCompleteRequest(pDE->pPendingIrp, IO_NO_INCREMENT);
+#ifdef THREAD_TERMINATION_CANCELLING
+	IoAcquireCancelSpinLock(&OldIrql);
+#endif
+	
+	if (pDE->pPendingIrp)
+	{
+#ifdef THREAD_TERMINATION_CANCELLING
+		IoSetCancelRoutine(pDE->pPendingIrp, NULL);
+		IoReleaseCancelSpinLock(OldIrql);
+#endif
+		IoCompleteRequest(pDE->pPendingIrp, IO_NO_INCREMENT);
+	}
+	else
+	{
+#ifdef THREAD_TERMINATION_CANCELLING
+		IoReleaseCancelSpinLock(OldIrql);
+#endif
+	}
+	return;
 }
+
+#ifdef THREAD_TERMINATION_CANCELLING
+void MyCancelRoutine(PDEVICE_OBJECT pDevObj, PIRP pIrp)
+{
+	DEVICE_EXTENSION* pDE;
+	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
+
+	KeCancelTimer(&pDE->Timer);
+	pDE->pPendingIrp = NULL;
+
+	IoReleaseCancelSpinLock(pIrp->CancelIrql);
+
+	pIrp->IoStatus.Status = STATUS_CANCELLED;
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+}
+#endif
+
 #endif
 
 NTSTATUS MyCreateDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
@@ -80,6 +119,10 @@ NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	pIrp->IoStatus.Information = Length;
 
 #ifdef PENDING_SUPPORTED
+
+#ifdef THREAD_TERMINATION_CANCELLING
+	IoSetCancelRoutine(pIrp, MyCancelRoutine);
+#endif
 	pDE->pPendingIrp = pIrp;
 	IoMarkIrpPending(pIrp);
 	{
