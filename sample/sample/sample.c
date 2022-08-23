@@ -42,62 +42,124 @@ NTSTATUS MyCloseDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 	return STATUS_SUCCESS;
 }
 
-void MyStartIo(DEVICE_EXTENSION* pDE)
+VOID MyCancelRoutine(PDEVICE_OBJECT DeviceObj, PIRP pIrp);
+
+void MyStartIo(DEVICE_EXTENSION* pDE, PIRP pIrp)
 {
 	LARGE_INTEGER Result;
+	KIRQL OldIrql;
+
+	IoAcquireCancelSpinLock(&OldIrql);
+
+	if (pDE->pCurrentIrp != pIrp)
+	{
+		IoReleaseCancelSpinLock(OldIrql);
+		goto exit;
+	}
+
+	IoSetCancelRoutine(pDE->pCurrentIrp, NULL);
+	IoReleaseCancelSpinLock(OldIrql);
+
 	Result.QuadPart = -1 * 5 * 10000000; // 5 sec
 	KeSetTimer(&pDE->Timer, Result, &pDE->Dpc);
+
+	IoSetCancelRoutine(pDE->pCurrentIrp, MyCancelRoutine);
+
+exit:
+	return;
+}
+
+void MyStartPacket(DEVICE_EXTENSION* pDE, PIRP pIrp)
+{
+	KIRQL OldIrql;
+
+	IoAcquireCancelSpinLock(&OldIrql);
+	IoSetCancelRoutine(pIrp, MyCancelRoutine);
+
+	if (pDE->pCurrentIrp)
+	{
+		ExInterlockedInsertTailList(&pDE->ListHead, &pIrp->Tail.Overlay.DeviceQueueEntry.DeviceListEntry, &pDE->ListSpinLock);
+		IoReleaseCancelSpinLock(OldIrql);
+	}
+	else
+	{
+		pDE->pCurrentIrp = pIrp;
+		IoReleaseCancelSpinLock(OldIrql);
+		MyStartIo(pDE, pIrp);
+	}
+}
+
+void MyStartNextPacket(DEVICE_EXTENSION* pDE)
+{
+	LIST_ENTRY* pListEntry;
+	PIRP pIrp;
+	KIRQL OldIrql;
+
+	IoAcquireCancelSpinLock(&OldIrql);
+	pDE->pCurrentIrp = NULL;
+	pListEntry = ExInterlockedRemoveHeadList(&pDE->ListHead, &pDE->ListSpinLock);
+	if (pListEntry)
+	{
+		pIrp = CONTAINING_RECORD(pListEntry, IRP, Tail.Overlay.DeviceQueueEntry.DeviceListEntry);
+		pDE->pCurrentIrp = pIrp;
+		IoReleaseCancelSpinLock(OldIrql);
+		MyStartIo(pDE, pIrp);
+	}
+	else
+	{
+		IoReleaseCancelSpinLock(OldIrql);
+	}
 }
 
 VOID MyTimerDpcRoutine(struct _KDPC* Dpc, PVOID  DeferredContext, PVOID SystemArgument1, PVOID SystemArgument2)
 {
 	DEVICE_EXTENSION* pDE = DeferredContext;
-	PLIST_ENTRY pListEntry = NULL;
+	PIRP pIrp;
+
 	Dpc = Dpc;
 	SystemArgument1 = SystemArgument1;
 	SystemArgument2 = SystemArgument2;
 
-	if (pDE->pCurrentIrp)
+	pIrp = pDE->pCurrentIrp;
+	if (pIrp)
 	{
-		IoCompleteRequest(pDE->pCurrentIrp, IO_NO_INCREMENT);
-		pDE->pCurrentIrp = NULL;
+		pIrp->IoStatus.Status = STATUS_SUCCESS;
+		pIrp->IoStatus.Information = 0;
+		IoCompleteRequest(pIrp, IO_NO_INCREMENT);
 	}
 
-	if (!IsListEmpty(&pDE->ListHead))
+	MyStartNextPacket(pDE);
+	return;
+}
+
+VOID MyCancelRoutine(PDEVICE_OBJECT pDevObj, PIRP pIrp)
+{
+	DEVICE_EXTENSION* pDE;
+	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
+
+	if (pDE->pCurrentIrp == pIrp)
 	{
-		pListEntry = ExInterlockedRemoveHeadList(&pDE->ListHead, &pDE->ListSpinLock);
-
-		pDE->pCurrentIrp = (PIRP)CONTAINING_RECORD(pListEntry, IRP, Tail.Overlay.DeviceQueueEntry.DeviceListEntry);
-
-		MyStartIo(pDE);
+		KeCancelTimer(&pDE->Timer);
+		IoReleaseCancelSpinLock(pIrp->CancelIrql);
+		MyStartNextPacket(pDE);
 	}
+	else
+	{
+		RemoveEntryList(&pIrp->Tail.Overlay.DeviceQueueEntry.DeviceListEntry);
+		IoReleaseCancelSpinLock(pIrp->CancelIrql);
+	}
+
+	pIrp->IoStatus.Status = STATUS_CANCELLED;
+	pIrp->IoStatus.Information = 0;
+	IoCompleteRequest(pIrp, 0); // 0 -> IO_NO_INCREMENT
 }
 
 NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
 	DEVICE_EXTENSION* pDE;
-	KIRQL OldIrql;
-
 	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
-
-	pIrp->IoStatus.Status = STATUS_SUCCESS;
-	pIrp->IoStatus.Information = 0;
-
 	IoMarkIrpPending(pIrp);
-
-	if (pDE->pCurrentIrp)
-	{
-		ExInterlockedInsertTailList(&pDE->ListHead, &pIrp->Tail.Overlay.DeviceQueueEntry.DeviceListEntry, &pDE->ListSpinLock);
-	}
-	else
-	{
-		KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
-
-		pDE->pCurrentIrp = pIrp;
-		MyStartIo(pDE);
-
-		KeLowerIrql(OldIrql);
-	}
+	MyStartPacket(pDE, pIrp);
 
 	return STATUS_PENDING;
 }
