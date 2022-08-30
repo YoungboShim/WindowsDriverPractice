@@ -1,11 +1,13 @@
 #include <ntddk.h>
 
-#define TARGET_PHYSICALADDRESS	(ULONGLONG)(0x0000000000000000)
-#define MAPPING_SIZE			(0x1000) // 4KB
+#define TARGET_PHYSICALADDRESS	(ULONGLONG)(0x00000000000F0000)
+#define MAPPING_SIZE			(0x10000) // 64KB
 
 typedef struct
 {
 	unsigned char* pKernelLevelMappedVirtualAddress;
+	unsigned char* pMappedUserLevelMappedVirtualAddress;
+	PMDL pMdl;
 }DEVICE_EXTENSION;
 
 void SampleDriverUnload(PDRIVER_OBJECT pDrvObj)
@@ -36,8 +38,18 @@ NTSTATUS MyCreateDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 
 NTSTATUS MyCloseDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
-	pDevObj = pDevObj;
-	pIrp = pIrp;
+	DEVICE_EXTENSION* pDE = NULL;
+
+	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
+
+	if (pDE->pMappedUserLevelMappedVirtualAddress)
+	{
+		MmUnmapLockedPages(pDE->pMappedUserLevelMappedVirtualAddress, pDE->pMdl);
+		IoFreeMdl(pDE->pMdl);
+		pDE->pMappedUserLevelMappedVirtualAddress = NULL;
+		pDE->pMdl = NULL;
+	}
+
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	IoCompleteRequest(pIrp, 0); // 0 -> IO_NO_INCREMENT
 	return STATUS_SUCCESS;
@@ -46,12 +58,27 @@ NTSTATUS MyCloseDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 NTSTATUS MyReadDispatch(PDEVICE_OBJECT pDevObj, PIRP pIrp)
 {
 	DEVICE_EXTENSION* pDE = NULL;
-	unsigned char** ppSystemBuffer = NULL;
+	unsigned char** ppReturnBuffer = NULL;
 
 	pDE = (DEVICE_EXTENSION*)pDevObj->DeviceExtension;
+	ppReturnBuffer = (unsigned char**)pIrp->AssociatedIrp.SystemBuffer;
 
-	ppSystemBuffer = (unsigned char**)pIrp->AssociatedIrp.SystemBuffer;
-	*ppSystemBuffer = pDE->pKernelLevelMappedVirtualAddress;
+	if (pDE->pMappedUserLevelMappedVirtualAddress)
+	{
+		MmUnmapLockedPages(pDE->pMappedUserLevelMappedVirtualAddress, pDE->pMdl);
+		IoFreeMdl(pDE->pMdl);
+		pDE->pMappedUserLevelMappedVirtualAddress = NULL;
+		pDE->pMdl = NULL;
+	}
+
+	pDE->pMdl = IoAllocateMdl(pDE->pKernelLevelMappedVirtualAddress, MAPPING_SIZE, FALSE, FALSE, NULL);
+	if (pDE->pMdl)
+	{
+		MmBuildMdlForNonPagedPool(pDE->pMdl);
+		*ppReturnBuffer = MmMapLockedPagesSpecifyCache(pDE->pMdl, UserMode, MmNonCached, NULL, FALSE, HighPagePriority);
+		pDE->pMappedUserLevelMappedVirtualAddress = *ppReturnBuffer;
+	}
+
 	pIrp->IoStatus.Information = sizeof(unsigned char*);
 	pIrp->IoStatus.Status = STATUS_SUCCESS;
 	IoCompleteRequest(pIrp, 0);
@@ -87,6 +114,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT pDrvObj, PUNICODE_STRING pRegPath)
 
 	PhysicalAddress.QuadPart = TARGET_PHYSICALADDRESS;
 	pDE->pKernelLevelMappedVirtualAddress = (unsigned char*) MmMapIoSpace(PhysicalAddress, MAPPING_SIZE, MmNonCached);
+	pDE->pMappedUserLevelMappedVirtualAddress = NULL;
+	pDE->pMdl = NULL;
 
 	return STATUS_SUCCESS;
 }

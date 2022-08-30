@@ -19,7 +19,20 @@ int main()
 
     if (bRet == TRUE)
     {
-        printf("Mapped Address = 0x%p\n", pVirtualAddress);
+        printf("Phys 0xF000 (64KB) Mapped Address = 0x%p\n", pVirtualAddress);
+
+        // Access to mapped VA
+        int x, y;
+        for (y = 0; y < 0x10000 / 16; y++)
+        {
+            for (x = 0; x < 16; x++)
+            {
+                printf("%02X ", *(pVirtualAddress + (y * 16 + x)));
+            }
+            printf("\n");
+        }
+        printf("\n");
+
         _getch();
     }
 
